@@ -1,0 +1,572 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// -----------------------------------------------------------------------------
+// CORE DOMAIN: Organization, Users, Roles & RBAC
+// -----------------------------------------------------------------------------
+
+model Organization {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users        User[]
+  hypotheses   Hypothesis[]
+  hunts        Hunt[]
+  cases        Case[]
+  integrations Integration[]
+  auditLogs    AuditLog[]
+  reports      Report[]
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  title        String?
+  isActive     Boolean  @default(true)
+  orgId        String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  userRoles    UserRole[]
+  auditLogs    AuditLog[]
+  hypotheses   Hypothesis[]
+  huntsLead    Hunt[]       @relation("HuntLead")
+  casesAssigned Case[]      @relation("CaseAssignee")
+  caseComments CaseComment[]
+  createdQueries Query[]
+  soarActionsRequested SOARAction[] @relation("SOARRequester")
+  soarActionsApproved  SOARAction[] @relation("SOARApprover")
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  displayName String
+  description String?
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  userRoles       UserRole[]
+  rolePermissions RolePermission[]
+}
+
+model Permission {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  resource    String
+  action      String
+  description String?
+
+  rolePermissions RolePermission[]
+}
+
+model RolePermission {
+  id           String @id @default(uuid())
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+}
+
+model UserRole {
+  id     String @id @default(uuid())
+  userId String
+  roleId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+}
+
+model SystemSetting {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  value       String
+  description String?
+  isSecret    Boolean  @default(false)
+  updatedAt   DateTime @updatedAt
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  action     String
+  resource   String
+  resourceId String?
+  userId     String?
+  orgId      String?
+  ipAddress  String?
+  userAgent  String?
+  status     String   @default("SUCCESS") // SUCCESS, FAILURE, DENIED
+  details    String?  // JSON formatted safe metadata (no credentials)
+  createdAt  DateTime @default(now())
+
+  user         User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  organization Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([action])
+  @@index([resource])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  title     String
+  message   String
+  type      String   @default("INFO") // INFO, WARNING, CRITICAL, SUCCESS
+  isRead    Boolean  @default(false)
+  link      String?
+  createdAt DateTime @default(now())
+}
+
+// -----------------------------------------------------------------------------
+// INTEGRATIONS & CONNECTORS
+// -----------------------------------------------------------------------------
+
+model Integration {
+  id          String   @id @default(uuid())
+  orgId       String
+  provider    String   // falcon, logscale, sentinel, splunk, elastic, torq
+  name        String
+  description String?
+  isEnabled   Boolean  @default(true)
+  configJson  String   // Non-sensitive configuration (urls, tenantId, workspaceId)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  organization Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  secrets      IntegrationSecret[]
+  healthLogs   ConnectorHealth[]
+}
+
+model IntegrationSecret {
+  id            String   @id @default(uuid())
+  integrationId String
+  keyName       String   // e.g. API_KEY, CLIENT_SECRET, TOKEN
+  encryptedData String   // AES-256-GCM ciphertext
+  iv            String   // AES-256-GCM IV (hex)
+  authTag       String   // AES-256-GCM AuthTag (hex)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  integration Integration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  @@unique([integrationId, keyName])
+}
+
+model ConnectorHealth {
+  id            String   @id @default(uuid())
+  integrationId String
+  status        String   // HEALTHY, DEGRADED, UNREACHABLE, NOT_CONFIGURED
+  latencyMs     Int?
+  message       String?
+  checkedAt     DateTime @default(now())
+
+  integration Integration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+}
+
+// -----------------------------------------------------------------------------
+// THREAT HUNTING DOMAIN
+// -----------------------------------------------------------------------------
+
+model Hypothesis {
+  id          String   @id @default(uuid())
+  orgId       String
+  authorId    String
+  title       String
+  statement   String
+  rationale   String
+  status      String   @default("DRAFT") // DRAFT, IN_PROGRESS, VALIDATED, DISPROVEN, ARCHIVED
+  confidence  String   @default("MEDIUM") // LOW, MEDIUM, HIGH
+  attackTags  String?  // JSON array of ATT&CK IDs e.g. ["T1059.001", "T1078"]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  author       User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  hunts        Hunt[]
+}
+
+model Hunt {
+  id           String   @id @default(uuid())
+  orgId        String
+  hypothesisId String?
+  packageId    String?
+  leadId       String
+  title        String
+  description  String?
+  stage        String   @default("PLANNING") // PLANNING, ACTIVE, ANALYSIS, COMPLETED, CLOSED
+  verdict      String?  // THREAT_CONFIRMED, BENIGN_ACTIVITY, INCONCLUSIVE, FALSE_POSITIVE
+  telemetryReq String?  // Expected data sources / logs
+  conclusion   String?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  hypothesis   Hypothesis?  @relation(fields: [hypothesisId], references: [id], onDelete: SetNull)
+  huntPackage  HuntPackage? @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  lead         User         @relation("HuntLead", fields: [leadId], references: [id], onDelete: Cascade)
+  executions   QueryExecution[]
+  findings     Finding[]
+  evidence     Evidence[]
+  cases        Case[]
+}
+
+model HuntPackage {
+  id           String   @id @default(uuid())
+  title        String
+  summary      String
+  category     String   // Persistence, Execution, Credential Access, Lateral Movement, C2, etc.
+  attackTags   String   // JSON array of ATT&CK technique IDs
+  telemetryReq String   // Expected telemetry fields / data types
+  instructions String   // Step-by-step analyst execution guide
+  defaultQuery String?  // SIEM query template
+  targetSIEM   String   @default("SPLUNK") // LOGSCALE, SENTINEL, SPLUNK, ELASTIC
+  version      String   @default("1.0.0")
+  isBuiltin    Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  hunts Hunt[]
+}
+
+model Query {
+  id          String   @id @default(uuid())
+  title       String
+  description String?
+  siemType    String   // LOGSCALE, SENTINEL, SPLUNK, ELASTIC
+  language    String   // LQL, KQL, SPL, EQL
+  content     String
+  attackTags  String?  // JSON array of ATT&CK IDs
+  authorId    String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  author     User             @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  versions   QueryVersion[]
+  executions QueryExecution[]
+}
+
+model QueryVersion {
+  id          String   @id @default(uuid())
+  queryId     String
+  versionNum  Int
+  content     String
+  changeLog   String?
+  createdAt   DateTime @default(now())
+
+  query Query @relation(fields: [queryId], references: [id], onDelete: Cascade)
+
+  @@unique([queryId, versionNum])
+}
+
+model QueryExecution {
+  id         String   @id @default(uuid())
+  queryId    String?
+  huntId     String?
+  siemType   String
+  rawQuery   String
+  status     String   @default("COMPLETED") // RUNNING, COMPLETED, FAILED, TIMED_OUT
+  durationMs Int      @default(0)
+  matchCount Int      @default(0)
+  resultJson String?  // JSON array of parsed event results
+  isDemoData Boolean  @default(false)
+  executedAt DateTime @default(now())
+
+  query Query? @relation(fields: [queryId], references: [id], onDelete: SetNull)
+  hunt  Hunt?  @relation(fields: [huntId], references: [id], onDelete: SetNull)
+}
+
+model Finding {
+  id          String   @id @default(uuid())
+  huntId      String
+  title       String
+  description String
+  severity    String   @default("MEDIUM") // LOW, MEDIUM, HIGH, CRITICAL
+  status      String   @default("NEW") // NEW, INVESTIGATING, ESCALATED_TO_CASE, DISMISSED
+  rawEvent    String?  // JSON raw log payload
+  createdAt   DateTime @default(now())
+
+  hunt     Hunt       @relation(fields: [huntId], references: [id], onDelete: Cascade)
+  evidence Evidence[]
+}
+
+model Evidence {
+  id          String   @id @default(uuid())
+  huntId      String?
+  caseId      String?
+  findingId   String?
+  title       String
+  type        String   // LOG_SNIPPET, PACKET_CAPTURE, MEMORY_DUMP, SCREENSHOT, REPORT, IOC_LIST
+  content     String   // Content text, structured JSON or base64
+  sha256Hash  String   // Integrity validation hash
+  metadata    String?  // JSON metadata
+  createdAt   DateTime @default(now())
+
+  hunt    Hunt?    @relation(fields: [huntId], references: [id], onDelete: SetNull)
+  case    Case?    @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  finding Finding? @relation(fields: [findingId], references: [id], onDelete: SetNull)
+}
+
+// -----------------------------------------------------------------------------
+// CASES & INCIDENTS
+// -----------------------------------------------------------------------------
+
+model Case {
+  id          String   @id @default(uuid())
+  orgId       String
+  huntId      String?
+  assigneeId  String?
+  title       String
+  description String
+  severity    String   @default("MEDIUM") // LOW, MEDIUM, HIGH, CRITICAL
+  priority    String   @default("P2")     // P1, P2, P3, P4
+  status      String   @default("OPEN")   // OPEN, INVESTIGATING, CONTAINED, RESOLVED, CLOSED
+  verdict     String?  // TRUE_POSITIVE, FALSE_POSITIVE, BENIGN_ACTIVITY
+  summary     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  organization Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  hunt         Hunt?         @relation(fields: [huntId], references: [id], onDelete: SetNull)
+  assignee     User?         @relation("CaseAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  comments     CaseComment[]
+  actions      CaseAction[]
+  evidence     Evidence[]
+  soarActions  SOARAction[]
+}
+
+model CaseComment {
+  id        String   @id @default(uuid())
+  caseId    String
+  authorId  String
+  comment   String
+  createdAt DateTime @default(now())
+
+  case   Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  author User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+}
+
+model CaseAction {
+  id        String   @id @default(uuid())
+  caseId    String
+  actorName String
+  action    String
+  details   String?
+  createdAt DateTime @default(now())
+
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+}
+
+// -----------------------------------------------------------------------------
+// IOC & THREAT INTELLIGENCE DOMAIN
+// -----------------------------------------------------------------------------
+
+model IOC {
+  id             String   @id @default(uuid())
+  type           String   // IPV4, IPV6, DOMAIN, URL, MD5, SHA1, SHA256, EMAIL, FILENAME, REGISTRY, MUTEX, CERTIFICATE, CVE, JA3, JA4
+  value          String   @unique
+  normalizedVal  String
+  defangedVal    String
+  reputation     String   @default("UNKNOWN") // MALICIOUS, HIGH_RISK, SUSPICIOUS, UNKNOWN, BENIGN, ALLOWLISTED, CONFLICTING
+  score          Int      @default(0)         // 0 to 100
+  confidence     Int      @default(50)        // 0 to 100
+  scoreReasoning String?  // Explainable scoring breakdown JSON
+  firstSeen      DateTime @default(now())
+  lastSeen       DateTime @default(now())
+  tags           String?  // JSON array
+  isOverridden   Boolean  @default(false)
+  overrideReason String?
+  overrideActor  String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  observations IOCObservation[]
+  verdicts     IOCVerdict[]
+
+  @@index([type])
+  @@index([normalizedVal])
+  @@index([reputation])
+}
+
+model IOCObservation {
+  id         String   @id @default(uuid())
+  iocId      String
+  source     String   // Splunk, Sentinel, Falcon, ThreatIntel, ManualImport, SOAR
+  context    String?  // Hostname, process name, query ID, or log context
+  observedAt DateTime @default(now())
+
+  ioc IOC @relation(fields: [iocId], references: [id], onDelete: Cascade)
+
+  @@index([iocId])
+}
+
+model IOCVerdict {
+  id         String   @id @default(uuid())
+  iocId      String
+  provider   String   // Internal, CrowdStrike, VirusTotal, AlienVault, Analyst
+  verdict    String   // MALICIOUS, SUSPICIOUS, BENIGN, CLEAN
+  score      Int      @default(0)
+  details    String?
+  recordedAt DateTime @default(now())
+
+  ioc IOC @relation(fields: [iocId], references: [id], onDelete: Cascade)
+}
+
+model ThreatActor {
+  id             String   @id @default(uuid())
+  name           String   @unique
+  originCountry  String?
+  motivation     String?  // Espionage, Financial, Sabotage, Hacktivism
+  firstObserved  String?
+  targetSectors  String?  // JSON array
+  description    String
+  confidenceRate Int      @default(80)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  aliases   ActorAlias[]
+  campaigns Campaign[]
+}
+
+model ActorAlias {
+  id      String @id @default(uuid())
+  actorId String
+  alias   String
+
+  actor ThreatActor @relation(fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@unique([actorId, alias])
+}
+
+model Malware {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  category    String   // Ransomware, C2 Implant, Stealer, Wiper, Loader, RAT
+  description String
+  platforms   String   // JSON array e.g. ["Windows", "Linux"]
+  firstSeen   String?
+  attackTags  String?  // JSON array of ATT&CK IDs
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  campaigns Campaign[]
+}
+
+model Campaign {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  actorId     String?
+  malwareId   String?
+  timeline    String?
+  description String
+  status      String   @default("ACTIVE") // ACTIVE, HISTORICAL, MONITORING
+  targetScope String?  // JSON array of target industries or countries
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  threatActor ThreatActor? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  malware     Malware?     @relation(fields: [malwareId], references: [id], onDelete: SetNull)
+}
+
+// -----------------------------------------------------------------------------
+// MITRE ATT&CK & D3FEND FRAMEWORKS
+// -----------------------------------------------------------------------------
+
+model MitreAttack {
+  id           String   @id @default(uuid())
+  techniqueId  String   @unique // e.g. T1059, T1059.001
+  name         String
+  tactic       String   // Reconnaissance, Initial Access, Execution, Persistence, etc.
+  description  String
+  isSubTechnique Boolean @default(false)
+  parentTechId String?
+  url          String?
+  detectionCount Int    @default(0) // Number of linked queries/hunts
+  createdAt    DateTime @default(now())
+}
+
+model MitreDefend {
+  id          String   @id @default(uuid())
+  defendId    String   @unique // e.g. D3-MFA, D3-PSA
+  name        String
+  tactic      String   // Model, Detect, Isolate, Deceive, Evict, Harden
+  description String
+  attackLinks String?  // JSON array of mapped ATT&CK technique IDs
+  url         String?
+  createdAt   DateTime @default(now())
+}
+
+// -----------------------------------------------------------------------------
+// SOAR & RESPONSE AUTOMATION (WITH MANDATORY APPROVAL)
+// -----------------------------------------------------------------------------
+
+model SOARAction {
+  id           String   @id @default(uuid())
+  caseId       String?
+  actionType   String   // ISOLATE_HOST, BLOCK_IP, SINKHOLE_DOMAIN, REVOKE_SESSION, DISABLE_ACCOUNT
+  target       String   // IP, Hostname, Domain, User Email
+  parameters   String?  // JSON parameters
+  rationale    String   // Security justification
+  status       String   @default("PENDING_APPROVAL") // PENDING_APPROVAL, APPROVED, REJECTED, EXECUTED, FAILED
+  requesterId  String
+  approverId   String?
+  executionLog String?  // Output result or error trace
+  requestedAt  DateTime @default(now())
+  approvedAt   DateTime?
+  executedAt   DateTime?
+
+  case      Case? @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  requester User  @relation("SOARRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  approver  User? @relation("SOARApprover", fields: [approverId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+}
+
+// -----------------------------------------------------------------------------
+// AI ADVISORY & REPORTS
+// -----------------------------------------------------------------------------
+
+model AIActivity {
+  id         String   @id @default(uuid())
+  capability String   // HYPOTHESIS_GEN, HUNT_SUMMARY, IOC_EXPLAIN, COVERAGE_GAP, CASE_ASSIST
+  prompt     String
+  response   String
+  isAdvisory Boolean  @default(true) // Always true — AI cannot execute actions or modify verdicts
+  userId     String?
+  createdAt  DateTime @default(now())
+}
+
+model Report {
+  id          String   @id @default(uuid())
+  orgId       String
+  title       String
+  type        String   // HUNT_REPORT, CASE_REPORT, INTEL_BRIEF, COVERAGE_AUDIT
+  authorName  String
+  summary     String
+  contentJson String   // Full structured report JSON data
+  format      String   @default("PDF") // PDF, JSON, MARKDOWN
+  createdAt   DateTime @default(now())
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+}
+

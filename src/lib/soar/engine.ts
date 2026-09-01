@@ -1,12 +1,9 @@
 import prisma from "@/lib/db";
 import { createAuditLog } from "@/lib/audit";
 import { SOARActionRequest, SOARActionExecutionResult } from "./types";
+import { TorqConnector } from "@/lib/connectors/torq";
+import { decryptSecret } from "@/lib/encryption";
 
-/**
- * Creates a SOAR containment action request.
- * SECURITY RULE: All destructive/containment actions are created in PENDING_APPROVAL.
- * No action is executed automatically.
- */
 export async function requestSOARAction(params: SOARActionRequest): Promise<string> {
   const action = await prisma.sOARAction.create({
     data: {
@@ -36,10 +33,6 @@ export async function requestSOARAction(params: SOARActionRequest): Promise<stri
   return action.id;
 }
 
-/**
- * Mandatory Approval & Execution Gate.
- * Enforces that an analyst explicitly approves the action before Torq dispatch.
- */
 export async function approveAndExecuteSOARAction(params: {
   actionId: string;
   approverId: string;
@@ -48,6 +41,7 @@ export async function approveAndExecuteSOARAction(params: {
 }): Promise<SOARActionExecutionResult> {
   const action = await prisma.sOARAction.findUnique({
     where: { id: params.actionId },
+    include: { requester: true },
   });
 
   if (!action) {
@@ -58,35 +52,85 @@ export async function approveAndExecuteSOARAction(params: {
     throw new Error(`Cannot approve action in status ${action.status}`);
   }
 
-  // Execute containment action via Torq / provider adapter
+  // ENFORCE SEPARATION OF DUTIES: Requester cannot approve their own containment action
+  if (action.requesterId === params.approverId) {
+    throw new Error("Separation of duties violation: An analyst cannot approve their own containment action. An independent authorized approver is required.");
+  }
+
+  // Retrieve Torq Integration settings for the organization if available
+  const integration = await prisma.integration.findFirst({
+    where: {
+      provider: "torq",
+      isEnabled: true,
+      orgId: action.requester.orgId,
+    },
+    include: { secrets: true },
+  });
+
+  let config: Record<string, unknown> = {};
+  let secrets: Record<string, string> = {};
+
+  if (integration) {
+    try {
+      config = JSON.parse(integration.configJson);
+      integration.secrets.forEach((s) => {
+        secrets[s.keyName] = decryptSecret({
+          encryptedData: s.encryptedData,
+          iv: s.iv,
+          authTag: s.authTag,
+        });
+      });
+    } catch (err) {
+      console.error("Failed to decrypt Torq secrets:", err);
+    }
+  } else if (process.env.TORQ_WEBHOOK_URL) {
+    config = { webhookUrl: process.env.TORQ_WEBHOOK_URL };
+    if (process.env.TORQ_API_KEY) secrets = { apiKey: process.env.TORQ_API_KEY };
+  }
+
+  const torqConnector = new TorqConnector(config, secrets);
+  let parsedParams = {};
+  if (action.parameters) {
+    try { parsedParams = JSON.parse(action.parameters); } catch {}
+  }
+
+  // Execute real containment dispatch via Torq provider
+  const dispatchResult = await torqConnector.dispatchContainment({
+    actionType: action.actionType,
+    target: action.target,
+    rationale: action.rationale,
+    parameters: parsedParams,
+    approverName: params.approverName,
+  });
+
   const executionTimestamp = new Date();
-  const logMessage = `[SUCCESS] Dispatched ${action.actionType} for target '${action.target}' via Torq SOAR Playbook. Approved by ${params.approverName}.`;
+  const finalStatus = dispatchResult.success ? "EXECUTED" : "FAILED";
+  const logMessage = dispatchResult.executionLog;
 
   const updated = await prisma.sOARAction.update({
     where: { id: params.actionId },
     data: {
-      status: "EXECUTED",
+      status: finalStatus,
       approverId: params.approverId,
       approvedAt: executionTimestamp,
-      executedAt: executionTimestamp,
+      executedAt: dispatchResult.success ? executionTimestamp : null,
       executionLog: logMessage,
     },
   });
 
-  // If linked to a case, record CaseAction
   if (action.caseId) {
     await prisma.caseAction.create({
       data: {
         caseId: action.caseId,
         actorName: params.approverName,
-        action: `SOAR Containment: ${action.actionType}`,
-        details: `Approved containment against target '${action.target}'. Result: ${logMessage}`,
+        action: `SOAR Containment: ${action.actionType} (${finalStatus})`,
+        details: `Action against '${action.target}'. Result: ${logMessage}`,
       },
     });
   }
 
   await createAuditLog({
-    action: "SOAR_ACTION_APPROVED_AND_EXECUTED",
+    action: dispatchResult.success ? "SOAR_ACTION_APPROVED_AND_EXECUTED" : "SOAR_ACTION_EXECUTION_FAILED",
     resource: "SOARAction",
     resourceId: action.id,
     userId: params.approverId,
@@ -94,22 +138,19 @@ export async function approveAndExecuteSOARAction(params: {
       actionType: action.actionType,
       target: action.target,
       approverId: params.approverId,
-      comments: params.comments,
+      status: finalStatus,
       executionLog: logMessage,
     },
   });
 
   return {
     actionId: updated.id,
-    status: "EXECUTED",
+    status: finalStatus,
     executionLog: logMessage,
     executedAt: executionTimestamp.toISOString(),
   };
 }
 
-/**
- * Rejects a pending SOAR action with reason.
- */
 export async function rejectSOARAction(params: {
   actionId: string;
   approverId: string;
@@ -121,6 +162,10 @@ export async function rejectSOARAction(params: {
 
   if (!action || action.status !== "PENDING_APPROVAL") {
     throw new Error("Action is not in pending approval status");
+  }
+
+  if (action.requesterId === params.approverId) {
+    throw new Error("Separation of duties violation: An analyst cannot reject/approve their own containment action.");
   }
 
   await prisma.sOARAction.update({

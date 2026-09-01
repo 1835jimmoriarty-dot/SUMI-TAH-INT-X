@@ -107,3 +107,9 @@ export const IntegrationConfigSchema = z.object({
   config: z.record(z.unknown()),
   secrets: z.record(z.string()).optional(),
 });
+
+// ─── Alias exports for backward-compat with route imports ────────────────────
+export const CaseCreateSchema = CaseSchema;
+export const HuntCreateSchema = HuntSchema;
+export const HypothesisCreateSchema = HypothesisSchema;
+

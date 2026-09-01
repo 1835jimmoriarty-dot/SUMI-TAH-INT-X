@@ -10,7 +10,10 @@ export async function POST(req: Request) {
     const body = await req.json();
     const validated = LoginSchema.safeParse(body);
     if (!validated.success) {
-      return NextResponse.json({ error: "Invalid input", details: validated.error.format() }, { status: 400 });
+      return NextResponse.json(
+        { error: "Invalid input", details: validated.error.format() },
+        { status: 400 }
+      );
     }
 
     const user = await prisma.user.findUnique({
@@ -21,9 +24,7 @@ export async function POST(req: Request) {
             role: {
               include: {
                 rolePermissions: {
-                  include: {
-                    permission: true,
-                  },
+                  include: { permission: true },
                 },
               },
             },
@@ -37,12 +38,21 @@ export async function POST(req: Request) {
         action: "AUTH_LOGIN_FAILED",
         resource: "User",
         status: "FAILURE",
-        details: { email: validated.data.email, reason: "Invalid credentials or inactive user" },
+        details: {
+          email: validated.data.email,
+          reason: "Invalid credentials or inactive user",
+        },
       });
-      return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
+      return NextResponse.json(
+        { error: "Invalid email or password" },
+        { status: 401 }
+      );
     }
 
-    const validPassword = await verifyPassword(validated.data.password, user.passwordHash);
+    const validPassword = await verifyPassword(
+      validated.data.password,
+      user.passwordHash
+    );
     if (!validPassword) {
       await createAuditLog({
         action: "AUTH_LOGIN_FAILED",
@@ -52,13 +62,18 @@ export async function POST(req: Request) {
         status: "FAILURE",
         details: { email: user.email, reason: "Password mismatch" },
       });
-      return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
+      return NextResponse.json(
+        { error: "Invalid email or password" },
+        { status: 401 }
+      );
     }
 
     const roles = user.userRoles.map((ur) => ur.role.name);
     const permissions = Array.from(
       new Set(
-        user.userRoles.flatMap((ur) => ur.role.rolePermissions.map((rp) => rp.permission.name))
+        user.userRoles.flatMap((ur) =>
+          ur.role.rolePermissions.map((rp) => rp.permission.name)
+        )
       )
     );
 
@@ -80,6 +95,7 @@ export async function POST(req: Request) {
       details: { email: user.email, roles },
     });
 
+    // SECURITY: Token is returned ONLY via HttpOnly cookie — never in the JSON body.
     const response = NextResponse.json({
       success: true,
       user: {
@@ -91,7 +107,6 @@ export async function POST(req: Request) {
         roles,
         permissions,
       },
-      token,
     });
 
     response.cookies.set({
@@ -106,6 +121,9 @@ export async function POST(req: Request) {
 
     return response;
   } catch (error: any) {
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    );
   }
 }

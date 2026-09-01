@@ -1,17 +1,31 @@
 import { BaseConnector } from "./base";
-import { ConnectorProvider, ConnectorHealthResult, QueryExecutionOptions, QueryExecutionResponse } from "./types";
+import {
+  ConnectorProvider,
+  ConnectorHealthResult,
+  QueryExecutionOptions,
+  QueryExecutionResponse,
+} from "./types";
 
 export class LogScaleConnector extends BaseConnector {
   provider: ConnectorProvider = "logscale";
   name = "Falcon LogScale (Humio)";
 
-  isConfigured(): boolean {
-    return Boolean(this.config.baseUrl && (this.secrets.apiKey || process.env.LOGSCALE_API_KEY));
+  private get apiKey(): string {
+    return this.secrets.apiKey || process.env.LOGSCALE_API_KEY || "";
   }
 
-  async validateConfig(config: Record<string, unknown>, secrets: Record<string, string>): Promise<{ valid: boolean; error?: string }> {
-    if (!config.baseUrl) return { valid: false, error: "LogScale Base URL is required" };
-    if (!secrets.apiKey && !process.env.LOGSCALE_API_KEY) return { valid: false, error: "LogScale API Key is required" };
+  isConfigured(): boolean {
+    return Boolean(this.config.baseUrl && this.apiKey);
+  }
+
+  async validateConfig(
+    config: Record<string, unknown>,
+    secrets: Record<string, string>
+  ): Promise<{ valid: boolean; error?: string }> {
+    if (!config.baseUrl)
+      return { valid: false, error: "LogScale Base URL is required" };
+    if (!secrets.apiKey && !process.env.LOGSCALE_API_KEY)
+      return { valid: false, error: "LogScale API Key is required" };
     return { valid: true };
   }
 
@@ -20,18 +34,42 @@ export class LogScaleConnector extends BaseConnector {
       return {
         status: "NOT_CONFIGURED",
         latencyMs: 0,
-        message: "LogScale connector is not configured. Provide repository URL and Ingest/API key.",
+        isDemoData: true,
+        message:
+          "LogScale connector is not configured. Provide repository URL and API key in Security Integrations.",
         checkedAt: new Date().toISOString(),
       };
     }
 
     try {
       const start = Date.now();
-      // In live environment, this would call `${this.config.baseUrl}/api/v1/repositories`
-      const latency = Date.now() - start + 45;
+      const res = await fetch(
+        `${this.config.baseUrl}/api/v1/repositories`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            "Content-Type": "application/json",
+          },
+          signal: AbortSignal.timeout(8000),
+        }
+      );
+      const latencyMs = Date.now() - start;
+
+      if (!res.ok) {
+        return {
+          status: "UNREACHABLE",
+          latencyMs,
+          isDemoData: false,
+          message: `LogScale returned HTTP ${res.status}: ${res.statusText}`,
+          checkedAt: new Date().toISOString(),
+        };
+      }
+
       return {
         status: "HEALTHY",
-        latencyMs: latency,
+        latencyMs,
+        isDemoData: false,
         message: "Connected to Falcon LogScale repository successfully.",
         checkedAt: new Date().toISOString(),
       };
@@ -40,6 +78,7 @@ export class LogScaleConnector extends BaseConnector {
       return {
         status: "UNREACHABLE",
         latencyMs: 0,
+        isDemoData: false,
         message: `Failed to communicate with LogScale: ${msg}`,
         checkedAt: new Date().toISOString(),
       };
@@ -48,8 +87,8 @@ export class LogScaleConnector extends BaseConnector {
 
   async execute(options: QueryExecutionOptions): Promise<QueryExecutionResponse> {
     const start = Date.now();
+
     if (!this.isConfigured()) {
-      // Rule: Never fabricate live SIEM data. If not configured, explain clearly or return demo flag if requested
       return {
         success: false,
         provider: this.provider,
@@ -57,28 +96,68 @@ export class LogScaleConnector extends BaseConnector {
         matchCount: 0,
         events: [],
         isDemoData: false,
-        errorMessage: "CONNECTOR NOT CONFIGURED: Falcon LogScale credentials are not set up. Please configure the connector in Security Integrations.",
+        errorMessage:
+          "CONNECTOR NOT CONFIGURED: Falcon LogScale credentials are not set. Configure the connector in Security Integrations.",
       };
     }
 
-    // Live connector query execution
-    return {
-      success: true,
-      provider: this.provider,
-      executionTimeMs: 142,
-      matchCount: 3,
-      events: [
+    try {
+      const body = JSON.stringify({
+        queryString: options.query,
+        start: options.startTime || "24h",
+        end: options.endTime || "now",
+        isLive: false,
+      });
+
+      const res = await fetch(
+        `${this.config.baseUrl}/api/v1/repositories/${this.config.repository || "hunt"}/query`,
         {
-          timestamp: new Date().toISOString(),
-          host: "DC01.corp.internal",
-          user: "SYSTEM",
-          process: "lsass.exe",
-          action: "ProcessAccess (GrantedAccess=0x1010)",
-          srcIp: "10.0.4.15",
-          destIp: "10.0.1.5",
-        },
-      ],
-      isDemoData: false,
-    };
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body,
+          signal: AbortSignal.timeout(30000),
+        }
+      );
+
+      const executionTimeMs = Date.now() - start;
+
+      if (!res.ok) {
+        return {
+          success: false,
+          provider: this.provider,
+          executionTimeMs,
+          matchCount: 0,
+          events: [],
+          isDemoData: false,
+          errorMessage: `LogScale query failed with HTTP ${res.status}: ${res.statusText}`,
+        };
+      }
+
+      const data = await res.json();
+      const events = Array.isArray(data) ? data : data.events || [];
+
+      return {
+        success: true,
+        provider: this.provider,
+        executionTimeMs,
+        matchCount: events.length,
+        events,
+        isDemoData: false,
+      };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Query failed";
+      return {
+        success: false,
+        provider: this.provider,
+        executionTimeMs: Date.now() - start,
+        matchCount: 0,
+        events: [],
+        isDemoData: false,
+        errorMessage: `LogScale query error: ${msg}`,
+      };
+    }
   }
 }

@@ -11,20 +11,17 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }
 
-  const hypothesis = await prisma.hypothesis.findUnique({
-    where: { id: params.id },
+  const hypothesis = await prisma.hypothesis.findFirst({
+    where: { id: params.id, orgId: session.orgId },
     include: {
       author: { select: { id: true, name: true, email: true } },
-      hunts: {
-        include: {
-          lead: { select: { name: true } },
-          findings: true,
-        },
-      },
+      hunts: true,
     },
   });
 
-  if (!hypothesis) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!hypothesis)
+    return NextResponse.json({ error: "Hypothesis not found" }, { status: 404 });
+
   return NextResponse.json(hypothesis);
 }
 
@@ -34,17 +31,29 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }
 
+  const existing = await prisma.hypothesis.findFirst({
+    where: { id: params.id, orgId: session.orgId },
+  });
+
+  if (!existing) {
+    return NextResponse.json({ error: "Hypothesis not found" }, { status: 404 });
+  }
+
   const body = await req.json();
+
+  // Only update fields that are present in the Prisma schema
+  const data: Record<string, unknown> = {};
+  if (body.status !== undefined) data.status = body.status;
+  if (body.confidence !== undefined) data.confidence = body.confidence;
+  if (body.statement !== undefined) data.statement = body.statement;
+  if (body.rationale !== undefined) data.rationale = body.rationale;
+  if (body.title !== undefined) data.title = body.title;
+  if (body.attackTags !== undefined)
+    data.attackTags = JSON.stringify(body.attackTags);
+
   const updated = await prisma.hypothesis.update({
     where: { id: params.id },
-    data: {
-      title: body.title,
-      statement: body.statement,
-      rationale: body.rationale,
-      status: body.status,
-      confidence: body.confidence,
-      attackTags: body.attackTags ? JSON.stringify(body.attackTags) : undefined,
-    },
+    data,
   });
 
   await createAuditLog({
@@ -53,6 +62,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     resourceId: params.id,
     userId: session.userId,
     orgId: session.orgId,
+    details: { status: updated.status },
   });
 
   return NextResponse.json(updated);

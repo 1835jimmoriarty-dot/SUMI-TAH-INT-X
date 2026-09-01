@@ -3,7 +3,6 @@ import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSessionFromRequest } from "@/lib/auth";
 import { hasPermission, PERMISSIONS } from "@/lib/rbac";
-import { IntegrationConfigSchema } from "@/lib/validation";
 import { encryptSecret } from "@/lib/encryption";
 import { createAuditLog } from "@/lib/audit";
 
@@ -16,9 +15,9 @@ export async function GET(req: Request) {
   const integrations = await prisma.integration.findMany({
     where: { orgId: session.orgId },
     include: {
-      healthLogs: { take: 1, orderBy: { checkedAt: "desc" } },
-      secrets: { select: { keyName: true } },
+      healthLogs: { orderBy: { checkedAt: "desc" }, take: 1 },
     },
+    orderBy: { createdAt: "desc" },
   });
 
   return NextResponse.json(integrations);
@@ -27,51 +26,56 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const session = await getSessionFromRequest(req);
   if (!session || !hasPermission(session.permissions, PERMISSIONS.INTEGRATIONS_MANAGE)) {
-    return NextResponse.json({ error: "Unauthorized: Integrations management permission required" }, { status: 403 });
+    return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }
 
-  const body = await req.json();
-  const validated = IntegrationConfigSchema.safeParse(body);
-  if (!validated.success) {
-    return NextResponse.json({ error: "Invalid integration config", details: validated.error.format() }, { status: 400 });
-  }
+  try {
+    const body = await req.json();
+    const { name, provider, description, config, secrets } = body;
 
-  const integration = await prisma.integration.create({
-    data: {
-      orgId: session.orgId,
-      provider: validated.data.provider,
-      name: validated.data.name,
-      description: validated.data.description,
-      isEnabled: validated.data.isEnabled,
-      configJson: JSON.stringify(validated.data.config),
-    },
-  });
+    if (!name || !provider) {
+      return NextResponse.json({ error: "Name and provider are required" }, { status: 400 });
+    }
 
-  if (validated.data.secrets) {
-    for (const [keyName, secretValue] of Object.entries(validated.data.secrets)) {
-      if (secretValue) {
-        const encrypted = encryptSecret(secretValue);
-        await prisma.integrationSecret.create({
-          data: {
-            integrationId: integration.id,
-            keyName,
-            encryptedData: encrypted.encryptedData,
-            iv: encrypted.iv,
-            authTag: encrypted.authTag,
-          },
-        });
+    const created = await prisma.integration.create({
+      data: {
+        name,
+        provider: provider.toLowerCase(),
+        description: description || "",
+        configJson: JSON.stringify(config || {}),
+        isEnabled: true,
+        orgId: session.orgId,
+      },
+    });
+
+    if (secrets && typeof secrets === "object") {
+      for (const [keyName, secretVal] of Object.entries(secrets)) {
+        if (typeof secretVal === "string" && secretVal.trim()) {
+          const enc = encryptSecret(secretVal.trim());
+          await prisma.integrationSecret.create({
+            data: {
+              integrationId: created.id,
+              keyName,
+              encryptedData: enc.encryptedData,
+              iv: enc.iv,
+              authTag: enc.authTag,
+            },
+          });
+        }
       }
     }
+
+    await createAuditLog({
+      action: "INTEGRATION_CREATED",
+      resource: "Integration",
+      resourceId: created.id,
+      userId: session.userId,
+      orgId: session.orgId,
+      details: { name: created.name, provider: created.provider },
+    });
+
+    return NextResponse.json(created, { status: 201 });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
-
-  await createAuditLog({
-    action: "INTEGRATION_CREATED",
-    resource: "Integration",
-    resourceId: integration.id,
-    userId: session.userId,
-    orgId: session.orgId,
-    details: { provider: integration.provider, name: integration.name },
-  });
-
-  return NextResponse.json(integration, { status: 201 });
 }

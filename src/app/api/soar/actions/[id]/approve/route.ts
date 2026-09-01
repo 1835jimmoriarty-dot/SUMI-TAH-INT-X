@@ -1,5 +1,6 @@
 export const dynamic = 'force-dynamic';
 import { NextResponse } from "next/server";
+import prisma from "@/lib/db";
 import { getSessionFromRequest } from "@/lib/auth";
 import { hasPermission, PERMISSIONS } from "@/lib/rbac";
 import { SOARActionApprovalSchema } from "@/lib/validation";
@@ -9,6 +10,27 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   const session = await getSessionFromRequest(req);
   if (!session || !hasPermission(session.permissions, PERMISSIONS.SOAR_APPROVE)) {
     return NextResponse.json({ error: "Unauthorized: SOAR Approval permission required" }, { status: 403 });
+  }
+
+  const action = await prisma.sOARAction.findUnique({
+    where: { id: params.id },
+    include: { requester: true },
+  });
+
+  if (!action) {
+    return NextResponse.json({ error: "SOAR action not found" }, { status: 404 });
+  }
+
+  // Multi-tenant check
+  if (action.requester.orgId !== session.orgId) {
+    return NextResponse.json({ error: "Unauthorized: Resource belongs to another organization" }, { status: 403 });
+  }
+
+  // Enforce Separation of Duties
+  if (action.requesterId === session.userId) {
+    return NextResponse.json({
+      error: "Separation of duties violation: An analyst cannot approve their own containment action. An independent authorized approver is required.",
+    }, { status: 403 });
   }
 
   const body = await req.json();

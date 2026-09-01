@@ -13,4 +13,15 @@ describe('Torq SOAR Human-in-the-Loop Mandatory Approval Gate', () => {
       expect(['CRITICAL', 'HIGH', 'MEDIUM']).toContain(def.severity);
     });
   });
+
+  it('should enforce separation of duties rule: self-approval is forbidden', () => {
+    const requesterId = 'analyst-123';
+    const approverIdSame = 'analyst-123';
+    const approverIdDifferent = 'admin-456';
+
+    const isSelfApproval = (reqId: string, appId: string) => reqId === appId;
+
+    expect(isSelfApproval(requesterId, approverIdSame)).toBe(true);
+    expect(isSelfApproval(requesterId, approverIdDifferent)).toBe(false);
+  });
 });

@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSessionFromRequest } from "@/lib/auth";
 import { hasPermission, PERMISSIONS } from "@/lib/rbac";
-import { HypothesisSchema } from "@/lib/validation";
+import { HypothesisCreateSchema } from "@/lib/validation";
 import { createAuditLog } from "@/lib/audit";
 
 export async function GET(req: Request) {
@@ -16,9 +16,9 @@ export async function GET(req: Request) {
     where: { orgId: session.orgId },
     include: {
       author: { select: { id: true, name: true, email: true } },
-      hunts: { select: { id: true, title: true, stage: true, verdict: true } },
+      hunts: { select: { id: true, title: true, stage: true } },
     },
-    orderBy: { updatedAt: "desc" },
+    orderBy: { createdAt: "desc" },
   });
 
   return NextResponse.json(hypotheses);
@@ -31,32 +31,35 @@ export async function POST(req: Request) {
   }
 
   const body = await req.json();
-  const validated = HypothesisSchema.safeParse(body);
+  const validated = HypothesisCreateSchema.safeParse(body);
   if (!validated.success) {
-    return NextResponse.json({ error: "Invalid hypothesis payload", details: validated.error.format() }, { status: 400 });
+    return NextResponse.json(
+      { error: "Invalid hypothesis payload", details: validated.error.format() },
+      { status: 400 }
+    );
   }
 
-  const hypothesis = await prisma.hypothesis.create({
+  const created = await prisma.hypothesis.create({
     data: {
-      orgId: session.orgId,
-      authorId: session.userId,
       title: validated.data.title,
       statement: validated.data.statement,
       rationale: validated.data.rationale,
-      status: validated.data.status,
-      confidence: validated.data.confidence,
-      attackTags: validated.data.attackTags ? JSON.stringify(validated.data.attackTags) : null,
+      confidence: validated.data.confidence ?? "MEDIUM",
+      status: validated.data.status ?? "DRAFT",
+      attackTags: JSON.stringify(validated.data.attackTags || []),
+      authorId: session.userId,
+      orgId: session.orgId,
     },
   });
 
   await createAuditLog({
     action: "HYPOTHESIS_CREATED",
     resource: "Hypothesis",
-    resourceId: hypothesis.id,
+    resourceId: created.id,
     userId: session.userId,
     orgId: session.orgId,
-    details: { title: hypothesis.title },
+    details: { title: created.title },
   });
 
-  return NextResponse.json(hypothesis, { status: 201 });
+  return NextResponse.json(created, { status: 201 });
 }

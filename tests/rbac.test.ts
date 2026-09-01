@@ -9,12 +9,15 @@ describe('RBAC & Authorization Matrix', () => {
     expect(hasPermission(adminPerms, PERMISSIONS.INTEGRATIONS_MANAGE)).toBe(true);
   });
 
-  it('should grant lead threat hunter proper investigation permissions', () => {
+  it('should grant lead threat hunter proper investigation and SOAR request permissions, but enforce separation of duties', () => {
     const hunterPerms = ROLE_PERMISSIONS_MAP[SYSTEM_ROLES.LEAD_HUNTER];
     expect(hasPermission(hunterPerms, PERMISSIONS.HUNTS_EXECUTE)).toBe(true);
     expect(hasPermission(hunterPerms, PERMISSIONS.QUERIES_EXECUTE)).toBe(true);
     expect(hasPermission(hunterPerms, PERMISSIONS.IOCS_OVERRIDE)).toBe(true);
-    expect(hasPermission(hunterPerms, PERMISSIONS.SOAR_APPROVE)).toBe(true);
+    expect(hasPermission(hunterPerms, PERMISSIONS.SOAR_REQUEST)).toBe(true);
+    
+    // Separation of duties: Hunter cannot approve SOAR actions
+    expect(hasPermission(hunterPerms, PERMISSIONS.SOAR_APPROVE)).toBe(false);
     
     // Hunter cannot manage users/admin by default
     expect(hasPermission(hunterPerms, PERMISSIONS.ADMIN_MANAGE)).toBe(false);

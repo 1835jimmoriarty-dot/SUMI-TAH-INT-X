@@ -11,15 +11,12 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }
 
-  const hunt = await prisma.hunt.findUnique({
-    where: { id: params.id },
+  const hunt = await prisma.hunt.findFirst({
+    where: { id: params.id, orgId: session.orgId },
     include: {
-      hypothesis: true,
-      huntPackage: true,
       lead: { select: { id: true, name: true, email: true } },
-      executions: { orderBy: { executedAt: "desc" } },
+      hypothesis: true,
       findings: { include: { evidence: true } },
-      evidence: true,
       cases: true,
     },
   });
@@ -34,25 +31,27 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }
 
-  const body = await req.json();
-  const updateData: any = {};
-  if (body.stage) updateData.stage = body.stage;
-  if (body.verdict) updateData.verdict = body.verdict;
-  if (body.conclusion !== undefined) updateData.conclusion = body.conclusion;
-  if (body.description !== undefined) updateData.description = body.description;
-  if (body.telemetryReq !== undefined) updateData.telemetryReq = body.telemetryReq;
+  const existing = await prisma.hunt.findFirst({
+    where: { id: params.id, orgId: session.orgId },
+  });
 
-  if (body.stage === "COMPLETED" && !updateData.completedAt) {
-    updateData.completedAt = new Date();
+  if (!existing) {
+    return NextResponse.json({ error: "Hunt not found" }, { status: 404 });
   }
 
+  const body = await req.json();
   const updated = await prisma.hunt.update({
     where: { id: params.id },
-    data: updateData,
+    data: {
+      stage: body.stage,
+      verdict: body.verdict,
+      conclusion: body.conclusion,
+      leadId: body.leadId,
+    },
   });
 
   await createAuditLog({
-    action: "HUNT_STAGE_UPDATED",
+    action: "HUNT_UPDATED",
     resource: "Hunt",
     resourceId: params.id,
     userId: session.userId,

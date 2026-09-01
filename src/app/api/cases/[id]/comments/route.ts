@@ -10,28 +10,29 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }
 
+  const existingCase = await prisma.case.findFirst({
+    where: { id: params.id, orgId: session.orgId },
+  });
+
+  if (!existingCase) {
+    return NextResponse.json({ error: "Case not found" }, { status: 404 });
+  }
+
   const body = await req.json();
   if (!body.comment || typeof body.comment !== "string") {
     return NextResponse.json({ error: "Comment text is required" }, { status: 400 });
   }
 
-  const comment = await prisma.caseComment.create({
+  const created = await prisma.caseComment.create({
     data: {
       caseId: params.id,
       authorId: session.userId,
       comment: body.comment,
     },
-    include: { author: { select: { name: true } } },
-  });
-
-  await prisma.caseAction.create({
-    data: {
-      caseId: params.id,
-      actorName: session.name,
-      action: "Added Analyst Note",
-      details: body.comment.slice(0, 120),
+    include: {
+      author: { select: { name: true, email: true } },
     },
   });
 
-  return NextResponse.json(comment, { status: 201 });
+  return NextResponse.json(created, { status: 201 });
 }

@@ -4,7 +4,7 @@ import prisma from "@/lib/db";
 import { getSessionFromRequest } from "@/lib/auth";
 import { hasPermission, PERMISSIONS } from "@/lib/rbac";
 import { SOARActionRequestSchema } from "@/lib/validation";
-import { requestSOARAction, SOAR_ACTION_DEFINITIONS } from "@/lib/soar";
+import { requestSOARAction } from "@/lib/soar";
 
 export async function GET(req: Request) {
   const session = await getSessionFromRequest(req);
@@ -13,18 +13,18 @@ export async function GET(req: Request) {
   }
 
   const actions = await prisma.sOARAction.findMany({
+    where: {
+      requester: { orgId: session.orgId },
+    },
     include: {
       requester: { select: { id: true, name: true, email: true } },
       approver: { select: { id: true, name: true, email: true } },
-      case: { select: { id: true, title: true, severity: true } },
+      case: { select: { id: true, title: true } },
     },
     orderBy: { requestedAt: "desc" },
   });
 
-  return NextResponse.json({
-    actions,
-    definitions: Object.values(SOAR_ACTION_DEFINITIONS),
-  });
+  return NextResponse.json({ actions });
 }
 
 export async function POST(req: Request) {
@@ -36,7 +36,17 @@ export async function POST(req: Request) {
   const body = await req.json();
   const validated = SOARActionRequestSchema.safeParse(body);
   if (!validated.success) {
-    return NextResponse.json({ error: "Invalid SOAR action payload", details: validated.error.format() }, { status: 400 });
+    return NextResponse.json({ error: "Invalid SOAR request payload", details: validated.error.format() }, { status: 400 });
+  }
+
+  // If linked to a case, verify case organization
+  if (validated.data.caseId) {
+    const linkedCase = await prisma.case.findFirst({
+      where: { id: validated.data.caseId, orgId: session.orgId },
+    });
+    if (!linkedCase) {
+      return NextResponse.json({ error: "Linked case does not exist in your organization" }, { status: 404 });
+    }
   }
 
   const actionId = await requestSOARAction({
@@ -48,10 +58,5 @@ export async function POST(req: Request) {
     requesterId: session.userId,
   });
 
-  return NextResponse.json({
-    success: true,
-    actionId,
-    status: "PENDING_APPROVAL",
-    message: "Action queued successfully. Mandatory analyst approval is required prior to execution.",
-  }, { status: 201 });
+  return NextResponse.json({ success: true, actionId, status: "PENDING_APPROVAL" }, { status: 201 });
 }

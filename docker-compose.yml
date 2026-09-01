@@ -1,7 +1,16 @@
 version: '3.8'
 
+# ============================================================
+# SUMI-TAH Integrated Threat-Hunting Platform
+# Docker Compose — Production Configuration
+#
+# REQUIRED ENVIRONMENT VARIABLES (set in .env or shell):
+#   POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+#   JWT_SECRET, ENCRYPTION_KEY
+# ============================================================
+
 services:
-  # SUMI-TAH SOC Application
+  # ── SUMI-TAH SOC Application ───────────────────────────────
   sumi-tah:
     build:
       context: .
@@ -11,43 +20,54 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NODE_ENV=production
-      - DATABASE_URL=postgresql://sumitah_admin:SecureDBPass2026!@postgres:5432/sumitah_prod?sslmode=disable
-      - JWT_SECRET=615725888698d3b84b992c8bd0dc9c31e249a2062d0b3c775be7988a07cd8951928677865d2ff3aaaa063eaac8b05bdd
-      - ENCRYPTION_KEY=ef0b61e794f941c78adf8b1ed9bbd2045e215d0fff47b8f5af19da8f84ced437
-      - AI_PROVIDER=mock
+      NODE_ENV: production
+      DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      JWT_SECRET: "${JWT_SECRET}"
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY}"
+      AI_PROVIDER: "${AI_PROVIDER:-mock}"
+      SESSION_EXPIRY_HOURS: "${SESSION_EXPIRY_HOURS:-24}"
     depends_on:
       postgres:
         condition: service_healthy
+    entrypoint: >
+      sh -c "
+        echo '[startup] Running database migrations...' &&
+        npx prisma db push --schema=prisma/schema.postgresql.prisma --skip-generate &&
+        echo '[startup] Seeding initial data...' &&
+        npx tsx prisma/seed.ts &&
+        echo '[startup] Starting SUMI-TAH application...' &&
+        node server.js
+      "
     networks:
       - sumitah-net
 
-  # PostgreSQL 16 Database
+  # ── PostgreSQL 16 Database ─────────────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: sumitah-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: sumitah_admin
-      POSTGRES_PASSWORD: SecureDBPass2026!
-      POSTGRES_DB: sumitah_prod
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB}"
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sumitah_admin -d sumitah_prod"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
     networks:
       - sumitah-net
 
-  # Redis Cache for High-Throughput Telemetry
+  # ── Redis Cache ────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: sumitah-redis
     restart: unless-stopped
+    command: redis-server --requirepass "${REDIS_PASSWORD:-}"
     ports:
       - "6379:6379"
     volumes:

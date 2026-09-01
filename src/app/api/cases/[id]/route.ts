@@ -11,8 +11,8 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }
 
-  const caseItem = await prisma.case.findUnique({
-    where: { id: params.id },
+  const caseItem = await prisma.case.findFirst({
+    where: { id: params.id, orgId: session.orgId },
     include: {
       assignee: { select: { id: true, name: true, email: true } },
       hunt: { include: { findings: true, hypothesis: true } },
@@ -31,6 +31,14 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   const session = await getSessionFromRequest(req);
   if (!session || !hasPermission(session.permissions, PERMISSIONS.CASES_WRITE)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+  }
+
+  const existing = await prisma.case.findFirst({
+    where: { id: params.id, orgId: session.orgId },
+  });
+
+  if (!existing) {
+    return NextResponse.json({ error: "Case not found" }, { status: 404 });
   }
 
   const body = await req.json();

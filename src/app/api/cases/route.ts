@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSessionFromRequest } from "@/lib/auth";
 import { hasPermission, PERMISSIONS } from "@/lib/rbac";
-import { CaseSchema } from "@/lib/validation";
+import { CaseCreateSchema } from "@/lib/validation";
 import { createAuditLog } from "@/lib/audit";
 
 export async function GET(req: Request) {
@@ -17,7 +17,7 @@ export async function GET(req: Request) {
     include: {
       assignee: { select: { id: true, name: true, email: true } },
       hunt: { select: { id: true, title: true } },
-      comments: { include: { author: { select: { name: true } } } },
+      comments: { include: { author: { select: { name: true } } }, orderBy: { createdAt: "desc" } },
       actions: { orderBy: { createdAt: "desc" } },
       evidence: true,
       soarActions: true,
@@ -35,43 +35,41 @@ export async function POST(req: Request) {
   }
 
   const body = await req.json();
-  const validated = CaseSchema.safeParse(body);
+  const validated = CaseCreateSchema.safeParse(body);
   if (!validated.success) {
-    return NextResponse.json({ error: "Invalid case payload", details: validated.error.format() }, { status: 400 });
+    return NextResponse.json({ error: "Invalid case data", details: validated.error.format() }, { status: 400 });
   }
 
-  const newCase = await prisma.case.create({
+  const created = await prisma.case.create({
     data: {
-      orgId: session.orgId,
-      huntId: validated.data.huntId,
-      assigneeId: validated.data.assigneeId || session.userId,
       title: validated.data.title,
       description: validated.data.description,
       severity: validated.data.severity,
       priority: validated.data.priority,
-      status: validated.data.status,
-      verdict: validated.data.verdict,
-      summary: validated.data.summary,
+      status: "OPEN",
+      huntId: validated.data.huntId,
+      assigneeId: validated.data.assigneeId || session.userId,
+      orgId: session.orgId,
     },
   });
 
   await prisma.caseAction.create({
     data: {
-      caseId: newCase.id,
+      caseId: created.id,
       actorName: session.name,
       action: "Created Incident Case",
-      details: `Case initialized with ${newCase.severity} severity and ${newCase.priority} priority.`,
+      details: `Initial severity: ${created.severity}, Priority: ${created.priority}`,
     },
   });
 
   await createAuditLog({
     action: "CASE_CREATED",
     resource: "Case",
-    resourceId: newCase.id,
+    resourceId: created.id,
     userId: session.userId,
     orgId: session.orgId,
-    details: { title: newCase.title, severity: newCase.severity },
+    details: { title: created.title, severity: created.severity },
   });
 
-  return NextResponse.json(newCase, { status: 201 });
+  return NextResponse.json(created, { status: 201 });
 }

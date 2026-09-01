@@ -4,7 +4,7 @@ import prisma from "@/lib/db";
 import { getSessionFromRequest } from "@/lib/auth";
 import { hasPermission, PERMISSIONS } from "@/lib/rbac";
 import { QueryExecutionSchema } from "@/lib/validation";
-import { getConnector } from "@/lib/connectors";
+import { getConnector, ConnectorProvider } from "@/lib/connectors";
 import { decryptSecret } from "@/lib/encryption";
 import { createAuditLog } from "@/lib/audit";
 
@@ -20,14 +20,18 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid execution payload", details: validated.error.format() }, { status: 400 });
   }
 
-  const providerMap: Record<string, "logscale" | "sentinel" | "splunk" | "falcon"> = {
+  const providerMap: Record<string, ConnectorProvider> = {
     LOGSCALE: "logscale",
     SENTINEL: "sentinel",
     SPLUNK: "splunk",
-    ELASTIC: "splunk",
+    ELASTIC: "elastic",
+    FALCON: "falcon",
   };
 
-  const provider = providerMap[validated.data.siemType] || "splunk";
+  const provider = providerMap[validated.data.siemType];
+  if (!provider) {
+    return NextResponse.json({ error: `Unsupported SIEM type: ${validated.data.siemType}` }, { status: 400 });
+  }
 
   const integration = await prisma.integration.findFirst({
     where: { orgId: session.orgId, provider },

@@ -3,6 +3,8 @@ import { LogScaleConnector } from "./logscale";
 import { SentinelConnector } from "./sentinel";
 import { SplunkConnector } from "./splunk";
 import { FalconConnector } from "./falcon";
+import { ElasticConnector } from "./elastic";
+import { TorqConnector } from "./torq";
 
 export function getConnector(
   provider: ConnectorProvider,
@@ -18,6 +20,10 @@ export function getConnector(
       return new SplunkConnector(config, secrets);
     case "falcon":
       return new FalconConnector(config, secrets);
+    case "elastic":
+      return new ElasticConnector(config, secrets);
+    case "torq":
+      return new TorqConnector(config, secrets);
     default:
       throw new Error(`Unsupported connector provider: ${provider}`);
   }
@@ -29,3 +35,5 @@ export * from "./logscale";
 export * from "./sentinel";
 export * from "./splunk";
 export * from "./falcon";
+export * from "./elastic";
+export * from "./torq";
