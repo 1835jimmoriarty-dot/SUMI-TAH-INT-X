@@ -1,0 +1,17 @@
+import { NextResponse } from "next/server";
+import prisma from "@/lib/db";
+import { getSessionFromRequest } from "@/lib/auth";
+import { hasPermission, PERMISSIONS } from "@/lib/rbac";
+
+export async function GET(req: Request) {
+  const session = await getSessionFromRequest(req);
+  if (!session || !hasPermission(session.permissions, PERMISSIONS.MITRE_READ)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+  }
+
+  const defendItems = await prisma.mitreDefend.findMany({
+    orderBy: { tactic: "asc" },
+  });
+
+  return NextResponse.json(defendItems);
+}
