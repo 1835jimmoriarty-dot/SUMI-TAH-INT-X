@@ -1,3 +1,6 @@
+const { write } = require('./writer');
+
+write('src/app/(dashboard)/page.tsx', `
 'use client';
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
@@ -191,7 +194,7 @@ export default function DashboardPage() {
                   <div key={hunt.id} className="p-4 hover:bg-charcoal-850/50 transition-colors flex items-center justify-between">
                     <div className="space-y-1">
                       <div className="flex items-center space-x-2">
-                        <Link href={`/hunts`}>
+                        <Link href={\`/hunts\`}>
                           <h4 className="text-sm font-semibold text-gray-200 hover:text-jade-400 transition-colors">{hunt.title}</h4>
                         </Link>
                         <Badge variant={hunt.stage === 'ACTIVE' ? 'active' : 'completed'}>{hunt.stage}</Badge>
@@ -314,3 +317,4 @@ export default function DashboardPage() {
     </div>
   );
 }
+`);

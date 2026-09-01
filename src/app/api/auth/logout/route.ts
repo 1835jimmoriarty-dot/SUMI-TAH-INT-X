@@ -1,3 +1,4 @@
+export const dynamic = 'force-dynamic';
 import { NextResponse } from "next/server";
 import { getSessionFromRequest, AUTH_COOKIE_NAME } from "@/lib/auth";
 import { createAuditLog } from "@/lib/audit";

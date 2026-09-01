@@ -1,3 +1,6 @@
+const { write } = require('./writer');
+
+write('src/components/shell/topbar.tsx', `
 'use client';
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
@@ -94,3 +97,4 @@ export function TopBar() {
     </>
   );
 }
+`);
