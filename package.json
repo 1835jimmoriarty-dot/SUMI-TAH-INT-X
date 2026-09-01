@@ -4,9 +4,9 @@
   "private": true,
   "description": "SUMI-TAH — Automated Threat Hunting & Adversary Intelligence Platform",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -H 0.0.0.0 -p 3000",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -H 0.0.0.0 -p 3000",
     "lint": "next lint",
     "test": "vitest run",
     "test:watch": "vitest",
